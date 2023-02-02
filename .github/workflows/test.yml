@@ -1,0 +1,38 @@
+name: 'test'
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-release:
+    runs-on: ubuntu-20.04
+    permissions:
+      contents: write
+      packages: write
+    strategy:
+      matrix:
+        pkgbuild: ["PKGBUILD.any", "PKGBUILD.multi"]
+        archlinux_arch: [aarch64, x86_64]
+        include:
+          - archlinux_arch: aarch64
+            docker_arch: aarch64
+          - archlinux_arch: x86_64
+            docker_arch: amd64
+    steps:
+      - name: check out repo for action code
+        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c # v3
+      - name: pkgbuild
+        uses: ./
+        with:
+          docker_arch: ${{ matrix.docker_arch }}
+          archlinux_arch: ${{ matrix.archlinux_arch }}
+          pkgbuild: ${{ matrix.pkgbuild }}
+          dispatch-token: ${{ secrets.DISPATCH }}
+          force-update: true
+          additional_repo: >
+            [manjaro-sway]\n
+            SigLevel = Optional TrustAll\n
+            Server = https://packages.manjaro-sway.download/\$arch\n

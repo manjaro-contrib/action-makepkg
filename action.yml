@@ -1,0 +1,134 @@
+name: 'manjaro makepkg action'
+description: 'builds packages for manjaro linux'
+
+inputs:
+  docker_arch:
+    description: 'amd64|aarch64'
+    required: true
+  archlinux_arch:
+    description: 'any|aarch64|x86_64'
+    required: true
+  pkgbuild:
+    description: 'path of the PKGBUILD file'
+    default: "PKGBUILD"
+    required: false
+  force-update:
+    description: force action to build, even if version tag exists
+    default: "false"
+    required: false
+  dispatch-token:
+    description: token required for dispatch to Manjaro-Sway/packages
+    required: true
+  branch:
+    description: manjaro branch to publish against
+    required: false
+    default: "stable"
+  additional_repo:
+    description: 'repository to place infront of other pacman repositories'
+    required: false
+  gpg_secret_base64:
+    description: 'base64 encoded key used to sign the package with'
+    required: false
+
+outputs:
+  filename:
+    description: "name of the result file"
+    value: ${{ steps.filename.outputs.name }}
+
+runs:
+  using: "composite"
+  steps:
+    - id: info
+      shell: bash
+      run: |
+        echo "archs=$(cat ${{ inputs.pkgbuild }} | grep ^arch= | sed -e 's/^arch=(\(.*\))/\1/')" >>$GITHUB_OUTPUT
+        VERSION=$(cat ${{ inputs.pkgbuild }} | grep ^pkgver= | sed -e 's/^pkgver=//' | awk '{print $1}')-$(cat ${{ inputs.pkgbuild }} | grep ^pkgrel= | sed -e 's/^pkgrel=//' | awk '{print $1}')
+        echo "version=${{ inputs.branch }}-${VERSION}" >>$GITHUB_OUTPUT
+    - name: x86_64-build
+      shell: bash
+      if: ${{ ( contains(steps.info.outputs.archs, 'any') && inputs.archlinux_arch == 'x86_64' ) }}
+      run: echo "BUILD=true" >>$GITHUB_ENV
+    - name: aarch64-build
+      shell: bash
+      if: ${{ contains(steps.info.outputs.archs, inputs.archlinux_arch) }}
+      run: echo "BUILD=true" >>$GITHUB_ENV
+    - name: check updatable
+      if: ${{ env.BUILD == 'true' }}
+      shell: bash
+      run: |
+        git fetch --tags
+        git rev-list "${{ steps.info.outputs.version }}" >/dev/null && \
+          echo "BUILD=${{ inputs.force-update }}" >>$GITHUB_ENV || \
+          echo "BUILD=true" >>$GITHUB_ENV
+    - uses: Manjaro-Sway/run-on-arch-action@master
+      if: ${{ env.BUILD == 'true' }}
+      name: build
+      id: build
+      with:
+        arch: ${{ inputs.docker_arch }}
+        distro: manjaro_latest
+        githubToken: ${{ github.token }}
+        setup: |
+          mkdir -p "${PWD}/artifacts"
+          mkdir -p "${PWD}/build"
+        dockerRunArgs: |
+          --volume "${PWD}/artifacts:/artifacts"
+          --volume "${PWD}/build:/build:cached"
+          --cap-add=SYS_ADMIN
+          --security-opt seccomp=unconfined
+        shell: /bin/sh
+        install: |
+          if [ -f additional_gpg ]; then
+            for key in "$(cat additional_gpg)";do
+              sudo -u builder gpg --keyserver keys.openpgp.org --recv-key $key
+              pacman-key --keyserver keys.openpgp.org --recv-keys $key
+            done
+          fi
+
+          if [ "${{ inputs.additional_repo }}" != "" ]; then
+            sed -i '/^\[core\]/i \Include = /etc/pacman.d/additional_repo\n' /etc/pacman.conf
+            printf "${{ inputs.additional_repo }}" >/etc/pacman.d/additional_repo
+            cat /etc/pacman.d/additional_repo
+          fi
+
+          pacman-mirrors --api --set-branch "${{ inputs.branch }}"
+          sudo pacman -Sy --noconfirm --needed base-devel github-cli
+        run: |
+          pacman -Syy
+          case "${{ inputs.docker_arch }}" in
+            amd64)
+              pacman --noconfirm -U https://archlinux.org/packages/extra/x86_64/cmake/download
+              ;;
+            aarch64)
+              ;;
+          esac
+          chown builder $PWD
+          sudo -u builder makepkg -fsAc --noconfirm --noprogressbar -p ${{ inputs.pkgbuild }}
+          cp *.pkg.tar.zst* /artifacts/
+    - name: sign
+      shell: bash
+      if: ${{ env.BUILD == 'true' && inputs.gpg_secret_base64 != '' }}
+      run: |
+        if [ "${{ inputs.gpg_secret_base64 }}" != "" ]; then
+          # import signing key (no passphrase)
+          cat <(echo -e "${{ inputs.gpg_secret_base64 }}" | base64 --decode) | gpg --batch --import
+
+          for file in ./artifacts/*.pkg.tar.zst; do 
+            gpg --pinentry-mode loopback --detach-sign ${file}
+          done
+        fi
+    - name: release
+      shell: bash
+      if: ${{ env.BUILD == 'true' }}
+      run: |
+        echo ${{ github.token }} | gh auth login --with-token
+        gh release create ${{ steps.info.outputs.version }} --repo ${{ github.repository }} || echo "release already exists"
+        gh release upload ${{ steps.info.outputs.version }} --repo ${{ github.repository }} --clobber ./artifacts/*.zst ./artifacts/*.sig
+    - name: dispatch
+      if: ${{ env.BUILD == 'true' }}
+      uses: peter-evans/repository-dispatch@26b39ed245ab8f31526069329e112ab2fb224588 # v2
+      with:
+        token: ${{ inputs.dispatch-token }}
+        repository: manjaro-sway/packages
+        event-type: package_update
+        client-payload: '{ "repository": "${{ github.repository }}", "version": "${{ steps.info.outputs.version }}", "branch": "${{ inputs.branch }}" }'
