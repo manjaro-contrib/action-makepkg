@@ -62,6 +62,9 @@ runs:
       shell: bash
       run: |
         pacman-mirrors --api --set-branch "${{ inputs.branch }}"
+    - name: set up pacman for multilib repository
+      run: |
+        sed -i "/\[multilib\]/,/Include/"'s/^#//' /etc/pacman.conf
     - name: build
       shell: bash
       run: |
