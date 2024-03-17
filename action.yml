@@ -61,7 +61,7 @@ runs:
     - name: set up pacman for multilib repository
       shell: bash
       run: |
-        if [ uname -m = x86_64 ]; then
+        if [ $(uname -m) == x86_64 ]; then
           sed -i "/\[multilib\]/,/Include/"'s/^#//' /etc/pacman.conf
         fi
     - name: set up pacman for target branch
