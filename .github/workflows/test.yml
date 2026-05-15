@@ -19,7 +19,7 @@ jobs:
       matrix:
         pkgbuild: ["PKGBUILD.any", "PKGBUILD.multi"]
         branch: [stable, testing, unstable]
-        runs-on: [buildjet-4vcpu-ubuntu-2204-arm, ubuntu-latest]
+        runs-on: [ubuntu-24.04-arm, ubuntu-latest]
     runs-on: ${{ matrix.runs-on }}
     container:
       image: docker://manjarolinux/build:latest
